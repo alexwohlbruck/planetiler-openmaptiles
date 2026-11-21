@@ -301,6 +301,23 @@ class PoiTest extends AbstractLayerTest {
   }
 
   @Test
+  void testImportanceFromCategoryFameAndFootprint() {
+    assertFeatures(14, List.of(Map.of("importance", 30)), process(pointFeature(Map.of(
+      "amenity", "hospital",
+      "name", "Clinic"
+    ))));
+    assertFeatures(14, List.of(Map.of("_layer", "landuse"), Map.of("_layer", "poi", "importance", 65)),
+      process(polygonFeature(Map.of(
+        "amenity", "hospital",
+        "name", "Campus",
+        "wikidata", "Q1"
+      ))));
+    assertFeatures(14, List.of(Map.of("importance", "<null>")), process(pointFeature(Map.of(
+      "amenity", "hospital"
+    ))));
+  }
+
+  @Test
   void testGridRank() throws GeometryException {
     var layerName = Poi.LAYER_NAME;
     Assertions.assertEquals(List.of(), profile.postProcessLayerFeatures(layerName, 13, List.of()));

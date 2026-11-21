@@ -53,7 +53,11 @@ import com.onthegomap.planetiler.geo.GeometryException;
 import com.onthegomap.planetiler.reader.SimpleFeature;
 import com.onthegomap.planetiler.stats.Stats;
 import com.onthegomap.planetiler.util.Parse;
+import com.onthegomap.planetiler.util.SortKey;
 import com.onthegomap.planetiler.util.Translations;
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -66,6 +70,7 @@ import org.openmaptiles.OpenMapTilesProfile;
 import org.openmaptiles.generated.OpenMapTilesSchema;
 import org.openmaptiles.generated.Tables;
 import org.openmaptiles.util.OmtLanguageUtils;
+import org.openmaptiles.util.PoiImportance;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -89,6 +94,8 @@ public class Poi implements
    */
 
   private static final Logger LOGGER = LoggerFactory.getLogger(Poi.class);
+  /** Not part of the OpenMapTiles schema: see FORK.md. */
+  static final String IMPORTANCE = "importance";
   private static final Map<String, Integer> CLASS_RANKS = Map.ofEntries(
     entry(FieldValues.CLASS_HOSPITAL, 20),
     entry(FieldValues.CLASS_RAILWAY, 40),
@@ -113,6 +120,15 @@ public class Poi implements
     entry(FieldValues.CLASS_CLOTHING_STORE, 700),
     entry(FieldValues.CLASS_BAR, 800)
   );
+  /** Landmark classes upstream leaves unranked, ranked for importance only. */
+  private static final Map<String, Integer> LANDMARK_CLASS_RANKS = Map.of(
+    "museum", 70,
+    FieldValues.CLASS_CASTLE, 70,
+    "monument", 80,
+    "theatre", 90,
+    FieldValues.CLASS_ART_GALLERY, 90,
+    "place_of_worship", 110
+  );
   private static final Set<String> UNIVERSITY_POI_SUBCLASSES = Set.of("university", "college");
   private static final List<String> AGG_STOP_SUBCLASS_ORDER = List.of(
     "subway",
@@ -127,11 +143,28 @@ public class Poi implements
   private final Translations translations;
   private final Stats stats;
   private final Map<String, List<Tables.OsmPoiPoint>> aggStops = new HashMap<>();
+  private final PoiImportance importance;
 
   public Poi(Translations translations, PlanetilerConfig config, Stats stats) {
     this.classMapping = FieldMappings.Class.index();
     this.translations = translations;
     this.stats = stats;
+    this.importance = loadImportance(config);
+  }
+
+  private static PoiImportance loadImportance(PlanetilerConfig config) {
+    String path = config.arguments().getString("poi_qrank",
+      "QRank CSV (Wikidata id → yearly pageviews) used to rank POI labels by fame", "");
+    if (path.isBlank()) {
+      return PoiImportance.withoutPageviews();
+    }
+    try {
+      var loaded = PoiImportance.fromQrank(Path.of(path));
+      LOGGER.info("Loaded pageviews for {} Wikidata items from {}", loaded.size(), path);
+      return loaded;
+    } catch (IOException e) {
+      throw new UncheckedIOException("Unable to read --poi-qrank file " + path, e);
+    }
   }
 
   static int poiClassRank(String clazz) {
@@ -302,7 +335,12 @@ public class Poi implements
     };
     String poiClass = poiClass(rawSubclass, element.mappingKey());
     int poiClassRank = poiClassRank(poiClass);
-    int rankOrder = poiClassRank + ((nullOrEmpty(name)) ? 2000 : 0);
+    boolean named = !nullOrEmpty(name);
+    Integer score = named ?
+      importance.score(LANDMARK_CLASS_RANKS.getOrDefault(poiClass, poiClassRank),
+        tags.get("wikidata")instanceof String q ? q : null,
+        element.source().hasTag("wikipedia"), squareMeters(element)) :
+      null;
 
     int minzoom = minzoom(element.subclass(), element.mappingKey());
     if (UNIVERSITY_POI_SUBCLASSES.contains(rawSubclass)) {
@@ -320,8 +358,29 @@ public class Poi implements
       .setAttr(Fields.AGG_STOP, aggStop)
       .putAttrs(OmtLanguageUtils.getNames(element.source().tags(), translations))
       .setPointLabelGridPixelSize(14, 64)
-      .setSortKey(rankOrder)
+      .setAttr(IMPORTANCE, score)
+      .setSortKey(SortKey
+        .orderByTruesFirst(named)
+        .thenByInt(named ? PoiImportance.MAX - score : 0, 0, PoiImportance.MAX)
+        .thenByInt(poiClassRank, 0, 1_000)
+        .get())
       .setMinZoom(minzoom);
+  }
+
+  private double squareMeters(Tables.WithSource element) {
+    var source = element.source();
+    if (!source.canBePolygon()) {
+      return 0;
+    }
+    try {
+      double lat = GeoUtils.getWorldLat(source.worldGeometry().getCentroid().getY());
+      double cos = Math.cos(Math.toRadians(lat));
+      double worldPerMeter = GeoUtils.metersToPixelAtEquator(0, 1) / 256d;
+      return source.area() / (worldPerMeter * worldPerMeter) * cos * cos;
+    } catch (GeometryException e) {
+      e.log(stats, "omt_poi_area", "Unable to get POI area for " + source.id());
+      return 0;
+    }
   }
 
   @Override
