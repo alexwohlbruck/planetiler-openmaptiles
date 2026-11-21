@@ -5,6 +5,13 @@ This fork renders Parchment's basemap. It tracks
 and changes only what is listed here. Merge upstream releases rather than rebasing, because
 published tags point into this history.
 
+## Releases
+
+Tag `v<upstream>-importance.N` (for example `v3.16-importance.1`). The `Parchment image` workflow
+publishes `ghcr.io/alexwohlbruck/planetiler-openmaptiles:<tag>` and `:latest`, which barrelman's
+`scripts/rebuild-basemap.sh` runs. Bump `N` for fork changes and restart it at 1 after an upstream
+merge.
+
 ## POI importance
 
 Upstream sorts each POI label-grid cell by a fixed category table (`Poi.CLASS_RANKS`) and breaks
