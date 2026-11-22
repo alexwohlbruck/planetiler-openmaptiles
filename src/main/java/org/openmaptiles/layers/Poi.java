@@ -50,6 +50,7 @@ import com.onthegomap.planetiler.config.PlanetilerConfig;
 import com.onthegomap.planetiler.expression.MultiExpression;
 import com.onthegomap.planetiler.geo.GeoUtils;
 import com.onthegomap.planetiler.geo.GeometryException;
+import com.onthegomap.planetiler.geo.TileCoord;
 import com.onthegomap.planetiler.reader.SimpleFeature;
 import com.onthegomap.planetiler.stats.Stats;
 import com.onthegomap.planetiler.util.Parse;
@@ -70,6 +71,7 @@ import org.openmaptiles.OpenMapTilesProfile;
 import org.openmaptiles.generated.OpenMapTilesSchema;
 import org.openmaptiles.generated.Tables;
 import org.openmaptiles.util.OmtLanguageUtils;
+import org.openmaptiles.util.PoiContainment;
 import org.openmaptiles.util.PoiImportance;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -85,12 +87,12 @@ public class Poi implements
   OpenMapTilesSchema.Poi,
   Tables.OsmPoiPoint.Handler,
   Tables.OsmPoiPolygon.Handler,
-  ForwardingProfile.LayerPostProcessor,
+  ForwardingProfile.TilePostProcessor,
   ForwardingProfile.FinishHandler {
 
   /*
-   * process() creates the raw POI feature from OSM elements and postProcess()
-   * assigns the feature rank from order in the tile at render-time.
+   * process() creates the raw POI feature from OSM elements and postProcessTile()
+   * demotes contained POIs, then assigns the feature rank from order in the tile at render-time.
    */
 
   private static final Logger LOGGER = LoggerFactory.getLogger(Poi.class);
@@ -142,11 +144,16 @@ public class Poi implements
   private static final Comparator<Tables.OsmPoiPoint> BY_SUBCLASS = Comparator
     .comparingInt(s -> AGG_STOP_SUBCLASS_ORDER.indexOf(s.subclass()));
   private static final Set<String> BRAND_OPERATOR_REF_SUBCLASSES = Set.of("charging_station", "parcel_locker");
+  /** Unnamed POIs carry no importance, so they sort after every named one. */
+  private static final Comparator<VectorTile.Feature> BY_IMPORTANCE = Comparator
+    .comparingInt((VectorTile.Feature f) -> f.tags().get(IMPORTANCE)instanceof Number n ? n.intValue() : -1)
+    .reversed();
   private final MultiExpression.Index<String> classMapping;
   private final Translations translations;
   private final Stats stats;
   private final Map<String, List<Tables.OsmPoiPoint>> aggStops = new HashMap<>();
   private final PoiImportance importance;
+  private final PoiContainment containment = new PoiContainment();
 
   public Poi(Translations translations, PlanetilerConfig config, Stats stats) {
     this.classMapping = FieldMappings.Class.index();
@@ -302,10 +309,19 @@ public class Poi implements
 
   @Override
   public void process(Tables.OsmPoiPolygon element, FeatureCollector features) {
-    setupPoiFeature(element, features.centroidIfConvex(LAYER_NAME), null);
+    var output = features.centroidIfConvex(LAYER_NAME);
+    Integer score = setupPoiFeature(element, output, null);
+    String poiClass = poiClass(element.subclass(), element.mappingKey());
+    if (score != null && PoiContainment.isContainer(poiClass, element.subclass())) {
+      try {
+        containment.add(output.getId(), element.source().worldGeometry(), score, poiClass);
+      } catch (GeometryException e) {
+        e.log(stats, "omt_poi_container", "Unable to get POI container geometry for " + element.source().id());
+      }
+    }
   }
 
-  private <T extends Tables.WithSubclass & Tables.WithStation & Tables.WithFunicular & Tables.WithSport & Tables.WithInformation & Tables.WithReligion & Tables.WithMappingKey & Tables.WithName & Tables.WithIndoor & Tables.WithLayer & Tables.WithSource & Tables.WithOperator & Tables.WithNetwork & Tables.WithBrand & Tables.WithRef> void setupPoiFeature(
+  private <T extends Tables.WithSubclass & Tables.WithStation & Tables.WithFunicular & Tables.WithSport & Tables.WithInformation & Tables.WithReligion & Tables.WithMappingKey & Tables.WithName & Tables.WithIndoor & Tables.WithLayer & Tables.WithSource & Tables.WithOperator & Tables.WithNetwork & Tables.WithBrand & Tables.WithRef> Integer setupPoiFeature(
     T element, FeatureCollector.Feature output, Integer aggStop) {
     String rawSubclass = element.subclass();
     if ("station".equals(rawSubclass) && "subway".equals(element.station())) {
@@ -375,6 +391,7 @@ public class Poi implements
         .thenByInt(poiClassRank, 0, 1_000)
         .get())
       .setMinZoom(minzoom);
+    return score;
   }
 
   private double squareMeters(Tables.WithSource element) {
@@ -394,16 +411,37 @@ public class Poi implements
   }
 
   @Override
-  public List<VectorTile.Feature> postProcess(int zoom, List<VectorTile.Feature> items) {
+  public Map<String, List<VectorTile.Feature>> postProcessTile(TileCoord tile,
+    Map<String, List<VectorTile.Feature>> layers) throws GeometryException {
+    List<VectorTile.Feature> items = layers.get(LAYER_NAME);
+    if (items == null || items.isEmpty()) {
+      return layers;
+    }
+    double tiles = 1 << tile.z();
+    for (VectorTile.Feature feature : items) {
+      var tags = feature.tags();
+      if (tags.get(IMPORTANCE)instanceof Number score && tags.get(Fields.CLASS)instanceof String poiClass &&
+        PoiContainment.hasFamily(poiClass) && feature.geometry().decode()instanceof Point point) {
+        double x = (tile.x() + point.getX() / 256) / tiles;
+        double y = (tile.y() + point.getY() / 256) / tiles;
+        int demoted = containment.demote(feature.id(), poiClass, x, y, score.intValue());
+        if (demoted != score.intValue()) {
+          tags.put(IMPORTANCE, demoted);
+        }
+      }
+    }
+    List<VectorTile.Feature> sorted = new ArrayList<>(items);
+    sorted.sort(BY_IMPORTANCE);
     // infer the "rank" field from the order of features within each label grid square
     LongIntMap groupCounts = Hppc.newLongIntHashMap();
-    for (VectorTile.Feature feature : items) {
+    for (VectorTile.Feature feature : sorted) {
       int gridrank = groupCounts.getOrDefault(feature.group(), 1);
       groupCounts.put(feature.group(), gridrank + 1);
       if (!feature.tags().containsKey(Fields.RANK)) {
         feature.tags().put(Fields.RANK, gridrank);
       }
     }
-    return items;
+    layers.put(LAYER_NAME, sorted);
+    return layers;
   }
 }
