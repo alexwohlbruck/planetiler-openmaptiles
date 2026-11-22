@@ -27,6 +27,12 @@ The fork sorts by an **importance** score and writes it to the tiles.
   prominent. It is not part of the OpenMapTiles schema.
 - `rank` keeps its meaning (1-based position in the 64px label grid at z14), but follows the new
   order.
+- Named POIs with `importance >= 50` appear from z12, and with `importance >= 42` from z13
+  (`Poi.Z12_IMPORTANCE`, `Poi.Z13_IMPORTANCE`). Everything else keeps upstream's minzoom: 14, or 12
+  for railway stations, halts and ferry terminals, or 10 for large universities. A lower upstream
+  minzoom is never raised.
+- These thresholds are part of the tile contract. Parchment's style gates POIs on the same numbers
+  (z12: `importance >= 50`, z13: `>= 42`), so change the tiles and every client's style together.
 
 ### Score
 

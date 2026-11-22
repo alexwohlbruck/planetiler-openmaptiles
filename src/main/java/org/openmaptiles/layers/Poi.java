@@ -96,6 +96,9 @@ public class Poi implements
   private static final Logger LOGGER = LoggerFactory.getLogger(Poi.class);
   /** Not part of the OpenMapTiles schema: see FORK.md. */
   static final String IMPORTANCE = "importance";
+  /** Named POIs at least this important appear from z12, and from z13 above the next threshold. */
+  static final int Z12_IMPORTANCE = 50;
+  static final int Z13_IMPORTANCE = 42;
   private static final Map<String, Integer> CLASS_RANKS = Map.ofEntries(
     entry(FieldValues.CLASS_HOSPITAL, 20),
     entry(FieldValues.CLASS_RAILWAY, 40),
@@ -184,10 +187,17 @@ public class Poi implements
     ), subclass);
   }
 
-  private int minzoom(String subclass, String mappingKey) {
+  private static int minzoom(String subclass, String mappingKey, Integer importance) {
     boolean lowZoom = ("station".equals(subclass) && "railway".equals(mappingKey)) ||
       "halt".equals(subclass) || "ferry_terminal".equals(subclass);
-    return lowZoom ? 12 : 14;
+    return Math.min(lowZoom ? 12 : 14, minzoomByImportance(importance));
+  }
+
+  static int minzoomByImportance(Integer importance) {
+    if (importance == null) {
+      return 14;
+    }
+    return importance >= Z12_IMPORTANCE ? 12 : importance >= Z13_IMPORTANCE ? 13 : 14;
   }
 
   @Override
@@ -342,7 +352,7 @@ public class Poi implements
         element.source().hasTag("wikipedia"), squareMeters(element)) :
       null;
 
-    int minzoom = minzoom(element.subclass(), element.mappingKey());
+    int minzoom = minzoom(element.subclass(), element.mappingKey(), score);
     if (UNIVERSITY_POI_SUBCLASSES.contains(rawSubclass)) {
       // universities that are at least 10% of a tile may appear from Z10
       output.setMinPixelSizeBelowZoom(13, 80); // 80x80px is ~10% of a 256x256px tile

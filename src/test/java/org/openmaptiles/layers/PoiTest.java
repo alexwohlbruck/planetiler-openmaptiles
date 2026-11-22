@@ -1,6 +1,7 @@
 package org.openmaptiles.layers;
 
 import static com.onthegomap.planetiler.TestUtils.newPoint;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import com.onthegomap.planetiler.FeatureCollector;
 import com.onthegomap.planetiler.geo.GeometryException;
@@ -238,7 +239,7 @@ class PoiTest extends AbstractLayerTest {
       "class", "place_of_worship",
       "subclass", "religion value",
       "rank", "<null>",
-      "_minzoom", 14
+      "_minzoom", area ? 13 : 14
     )), process(feature(area, Map.of(
       "amenity", "place_of_worship",
       "religion", "religion value",
@@ -315,6 +316,33 @@ class PoiTest extends AbstractLayerTest {
     assertFeatures(14, List.of(Map.of("importance", "<null>")), process(pointFeature(Map.of(
       "amenity", "hospital"
     ))));
+  }
+
+  @Test
+  void testImportantPoisAppearAtLowZoom() {
+    assertFeatures(14, List.of(Map.of("_layer", "landuse"), Map.of("_layer", "poi", "importance", 65, "_minzoom", 12)),
+      process(polygonFeature(Map.of(
+        "amenity", "hospital",
+        "name", "Campus",
+        "wikidata", "Q1"
+      ))));
+    assertFeatures(14, List.of(Map.of("importance", 45, "_minzoom", 13)), process(polygonFeature(Map.of(
+      "tourism", "attraction",
+      "name", "Plaza"
+    ))));
+    assertFeatures(14, List.of(Map.of("importance", 30, "_minzoom", 14)), process(pointFeature(Map.of(
+      "amenity", "hospital",
+      "name", "Clinic"
+    ))));
+    assertFeatures(14, List.of(Map.of("_minzoom", 12)), process(pointFeature(Map.of(
+      "railway", "halt",
+      "name", "Stop"
+    ))));
+    assertEquals(12, Poi.minzoomByImportance(Poi.Z12_IMPORTANCE));
+    assertEquals(13, Poi.minzoomByImportance(Poi.Z12_IMPORTANCE - 1));
+    assertEquals(13, Poi.minzoomByImportance(Poi.Z13_IMPORTANCE));
+    assertEquals(14, Poi.minzoomByImportance(Poi.Z13_IMPORTANCE - 1));
+    assertEquals(14, Poi.minzoomByImportance(null));
   }
 
   @Test
