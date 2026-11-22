@@ -1,12 +1,19 @@
 package org.openmaptiles.layers;
 
 import static com.onthegomap.planetiler.TestUtils.newPoint;
+import static com.onthegomap.planetiler.TestUtils.rectangle;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.fail;
 
 import com.onthegomap.planetiler.FeatureCollector;
+import com.onthegomap.planetiler.VectorTile;
+import com.onthegomap.planetiler.geo.GeoUtils;
 import com.onthegomap.planetiler.geo.GeometryException;
+import com.onthegomap.planetiler.geo.TileCoord;
 import com.onthegomap.planetiler.reader.SimpleFeature;
 import com.onthegomap.planetiler.reader.SourceFeature;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Assertions;
@@ -238,7 +245,7 @@ class PoiTest extends AbstractLayerTest {
       "class", "place_of_worship",
       "subclass", "religion value",
       "rank", "<null>",
-      "_minzoom", 14
+      "_minzoom", area ? 13 : 14
     )), process(feature(area, Map.of(
       "amenity", "place_of_worship",
       "religion", "religion value",
@@ -318,15 +325,42 @@ class PoiTest extends AbstractLayerTest {
   }
 
   @Test
+  void testImportantPoisAppearAtLowZoom() {
+    assertFeatures(14, List.of(Map.of("_layer", "landuse"), Map.of("_layer", "poi", "importance", 65, "_minzoom", 12)),
+      process(polygonFeature(Map.of(
+        "amenity", "hospital",
+        "name", "Campus",
+        "wikidata", "Q1"
+      ))));
+    assertFeatures(14, List.of(Map.of("importance", 45, "_minzoom", 13)), process(polygonFeature(Map.of(
+      "tourism", "attraction",
+      "name", "Plaza"
+    ))));
+    assertFeatures(14, List.of(Map.of("importance", 30, "_minzoom", 14)), process(pointFeature(Map.of(
+      "amenity", "hospital",
+      "name", "Clinic"
+    ))));
+    assertFeatures(14, List.of(Map.of("_minzoom", 12)), process(pointFeature(Map.of(
+      "railway", "halt",
+      "name", "Stop"
+    ))));
+    assertEquals(12, Poi.minzoomByImportance(Poi.Z12_IMPORTANCE));
+    assertEquals(13, Poi.minzoomByImportance(Poi.Z12_IMPORTANCE - 1));
+    assertEquals(13, Poi.minzoomByImportance(Poi.Z13_IMPORTANCE));
+    assertEquals(14, Poi.minzoomByImportance(Poi.Z13_IMPORTANCE - 1));
+    assertEquals(14, Poi.minzoomByImportance(null));
+  }
+
+  @Test
   void testGridRank() throws GeometryException {
     var layerName = Poi.LAYER_NAME;
-    Assertions.assertEquals(List.of(), profile.postProcessLayerFeatures(layerName, 13, List.of()));
+    Assertions.assertEquals(List.of(), postProcess(13, List.of()));
 
     Assertions.assertEquals(List.of(pointFeature(
       layerName,
       Map.of("rank", 1),
       1
-    )), profile.postProcessLayerFeatures(layerName, 14, List.of(pointFeature(
+    )), postProcess(14, List.of(pointFeature(
       layerName,
       Map.of(),
       1
@@ -346,7 +380,7 @@ class PoiTest extends AbstractLayerTest {
         Map.of("rank", 1, "name", "c"),
         2
       )
-    ), profile.postProcessLayerFeatures(layerName, 14, List.of(
+    ), postProcess(14, List.of(
       pointFeature(
         layerName,
         Map.of("name", "a"),
@@ -363,6 +397,61 @@ class PoiTest extends AbstractLayerTest {
         2
       )
     )));
+  }
+
+  private List<VectorTile.Feature> postProcess(int zoom, List<VectorTile.Feature> items) throws GeometryException {
+    return postProcess(TileCoord.ofXYZ(0, 0, zoom), items);
+  }
+
+  private List<VectorTile.Feature> postProcess(TileCoord tile, List<VectorTile.Feature> items)
+    throws GeometryException {
+    var layers = new HashMap<String, List<VectorTile.Feature>>();
+    layers.put(Poi.LAYER_NAME, items);
+    return profile.postProcessTileFeatures(tile, layers).get(Poi.LAYER_NAME);
+  }
+
+  /** A hospital campus covering z2 tile 1/1, returning its POI's feature id. */
+  private long processHospitalCampus() {
+    var campus = SimpleFeature.create(GeoUtils.worldToLatLonCoords(rectangle(0.25, 0.5)), new HashMap<>(Map.of(
+      "amenity", "hospital",
+      "name", "General",
+      "wikidata", "Q1"
+    )), OpenMapTilesProfile.OSM_SOURCE, null, 7);
+    for (var feature : process(campus)) {
+      if (feature.getLayer().equals(Poi.LAYER_NAME)) {
+        return feature.getId();
+      }
+    }
+    return fail("no poi");
+  }
+
+  private static VectorTile.Feature poiAt(long id, double x, double y, String poiClass, String name, int importance) {
+    return new VectorTile.Feature(Poi.LAYER_NAME, id, VectorTile.encodeGeometry(newPoint(x, y)),
+      new HashMap<>(Map.of("class", poiClass, "name", name, Poi.IMPORTANCE, importance)), 1);
+  }
+
+  @Test
+  void testContainedPoiIsDemotedAndReranked() throws GeometryException {
+    processHospitalCampus();
+    var tile = TileCoord.ofXYZ(1, 1, 2);
+    var result = postProcess(tile, new ArrayList<>(List.of(
+      poiAt(1, 128, 128, "pharmacy", "Pharmacy", 41),
+      poiAt(2, 100, 100, "cafe", "Cafe", 30),
+      poiAt(3, -10, 128, "pharmacy", "Outside", 25)
+    )));
+    assertEquals(List.of("Cafe", "Outside", "Pharmacy"), result.stream().map(f -> f.tags().get("name")).toList());
+    assertEquals(List.of(30, 25, 20), result.stream().map(f -> f.tags().get(Poi.IMPORTANCE)).toList());
+    assertEquals(List.of(1, 2, 3), result.stream().map(f -> f.tags().get("rank")).toList());
+  }
+
+  @Test
+  void testPoiIsNotDemotedByItsOwnPolygon() throws GeometryException {
+    long id = processHospitalCampus();
+    var result = postProcess(TileCoord.ofXYZ(1, 1, 2), new ArrayList<>(List.of(
+      poiAt(id, 128, 128, "hospital", "General", 65),
+      poiAt(id + 1, 128, 128, "hospital", "Wing", 65)
+    )));
+    assertEquals(List.of(65, 65), result.stream().map(f -> f.tags().get(Poi.IMPORTANCE)).toList());
   }
 
   @Test
