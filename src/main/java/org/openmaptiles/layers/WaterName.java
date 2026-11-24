@@ -51,7 +51,11 @@ import com.onthegomap.planetiler.util.Translations;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentSkipListMap;
+import org.locationtech.jts.geom.Coordinate;
 import org.locationtech.jts.geom.Geometry;
+import org.locationtech.jts.geom.LineString;
+import org.locationtech.jts.geom.Polygon;
+import org.locationtech.jts.geom.util.GeometryFixer;
 import org.openmaptiles.OpenMapTilesProfile;
 import org.openmaptiles.generated.OpenMapTilesSchema;
 import org.openmaptiles.generated.Tables;
@@ -88,6 +92,11 @@ public class WaterName implements
   private static final int MINZOOM_BAY = 9;
   private static final int MINZOOM_LAKE = 3;
   private static final int MINZOOM_SEA_AND_OCEAN = 0;
+  static final String ROOM_X = "room_x";
+  static final String ROOM_Y = "room_y";
+  /** World units to screen pixels at z14 with 512px tiles. */
+  private static final double ROOM_SCALE = 1 << 23;
+  private static final int ROOM_MAX = 1_000_000;
   private final Translations translations;
   // need to synchronize updates from multiple threads
   private final LongObjectMap<Geometry> lakeCenterlines = Hppc.newLongObjectHashMap();
@@ -243,12 +252,71 @@ public class WaterName implements
         // use a label point inside the lake but ...
         // ... if centerline already created, adjust maxzoom here to make sure we're not having both at same zoom level
         int maxzoom = centerlineGeometry != null ? minzoomCL - 1 : 14;
-        setupOsmWaterPolygonFeature(element, features.pointOnSurface(LAYER_NAME), clazz, minzoom)
+        var point = setupOsmWaterPolygonFeature(element, features.pointOnSurface(LAYER_NAME), clazz, minzoom)
           .setMaxZoom(maxzoom)
           // Show a label if a water feature covers at least 1/4 of a tile or z14+
           .setMinPixelSizeBelowZoom(13, 128);
+        putLabelRoom(element.source(), point);
       }
     }
+  }
+
+  private void putLabelRoom(SourceFeature source, FeatureCollector.Feature point) {
+    try {
+      Geometry water = source.worldGeometry();
+      if (!water.isValid()) {
+        water = GeometryFixer.fix(water);
+      }
+      Coordinate label = source.pointOnSurface().getCoordinate();
+      double roomX = chord(water, label, true);
+      double roomY = chord(water, label, false);
+      if (Double.isFinite(roomX) && Double.isFinite(roomY)) {
+        point.setAttr(ROOM_X, toPixels(roomX)).setAttr(ROOM_Y, toPixels(roomY));
+      }
+    } catch (GeometryException e) {
+      e.log(stats, "omt_water_name_room", "Error computing label room for " + source);
+    } catch (RuntimeException e) {
+      LOGGER.debug("Error computing label room for {}", source, e);
+    }
+  }
+
+  private static int toPixels(double worldLength) {
+    return (int) Math.min(ROOM_MAX, Math.round(worldLength * ROOM_SCALE));
+  }
+
+  /**
+   * Length of the axis-aligned line through {@code label} clipped to {@code water}, keeping only the segment that
+   * contains the label. Returns NaN when the label is not enclosed.
+   */
+  static double chord(Geometry water, Coordinate label, boolean horizontal) {
+    double along = horizontal ? label.x : label.y;
+    double across = horizontal ? label.y : label.x;
+    double before = Double.NEGATIVE_INFINITY;
+    double after = Double.POSITIVE_INFINITY;
+    for (int i = 0; i < water.getNumGeometries(); i++) {
+      if (water.getGeometryN(i)instanceof Polygon polygon) {
+        for (int r = -1; r < polygon.getNumInteriorRing(); r++) {
+          LineString ring = r < 0 ? polygon.getExteriorRing() : polygon.getInteriorRingN(r);
+          var coords = ring.getCoordinateSequence();
+          for (int j = 1; j < coords.size(); j++) {
+            double a0 = horizontal ? coords.getY(j - 1) : coords.getX(j - 1);
+            double a1 = horizontal ? coords.getY(j) : coords.getX(j);
+            if ((a0 > across) == (a1 > across)) {
+              continue;
+            }
+            double b0 = horizontal ? coords.getX(j - 1) : coords.getY(j - 1);
+            double b1 = horizontal ? coords.getX(j) : coords.getY(j);
+            double crossing = b0 + (across - a0) / (a1 - a0) * (b1 - b0);
+            if (crossing <= along) {
+              before = Math.max(before, crossing);
+            } else {
+              after = Math.min(after, crossing);
+            }
+          }
+        }
+      }
+    }
+    return after - before;
   }
 
   private FeatureCollector.Feature setupOsmWaterPolygonFeature(Tables.OsmWaterPolygon element,

@@ -6,10 +6,12 @@ import static com.onthegomap.planetiler.TestUtils.rectangle;
 import com.onthegomap.planetiler.TestUtils;
 import com.onthegomap.planetiler.geo.GeoUtils;
 import com.onthegomap.planetiler.reader.SimpleFeature;
+import com.onthegomap.planetiler.reader.SourceFeature;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
+import org.locationtech.jts.geom.Coordinate;
 import org.locationtech.jts.geom.Geometry;
 import org.openmaptiles.OpenMapTilesProfile;
 
@@ -36,6 +38,47 @@ class WaterNameTest extends AbstractLayerTest {
       "water", "pond",
       "intermittent", "1"
     ))));
+  }
+
+  private static final double PX = 1d / (1 << 23);
+
+  private static List<Coordinate> pxRectangle(double minX, double minY, double maxX, double maxY) {
+    return TestUtils.rectangleCoordList(0.5 + minX * PX, 0.5 + minY * PX, 0.5 + maxX * PX, 0.5 + maxY * PX);
+  }
+
+  private static SourceFeature lake(Geometry world) {
+    return SimpleFeature.create(GeoUtils.worldToLatLonCoords(world), new HashMap<>(Map.of(
+      "name", "lake",
+      "natural", "water"
+    )), OpenMapTilesProfile.OSM_SOURCE, null, 0);
+  }
+
+  @Test
+  void testLakeLabelRoom() {
+    assertFeatures(14, List.of(Map.of(
+      "_layer", "water"
+    ), Map.of(
+      "_layer", "water_name",
+      "_type", "point",
+      "room_x", 1000,
+      "room_y", 300
+    )), process(lake(TestUtils.newPolygon(pxRectangle(0, 0, 1000, 300)))));
+  }
+
+  @Test
+  void testLakeLabelRoomCutByIslands() {
+    // label lands at (300, 150): the island to its right cuts the horizontal chord, the one below the vertical
+    assertFeatures(14, List.of(Map.of(
+      "_layer", "water"
+    ), Map.of(
+      "_layer", "water_name",
+      "_type", "point",
+      "room_x", 600,
+      "room_y", 220
+    )), process(lake(TestUtils.newPolygon(pxRectangle(0, 0, 1000, 300), List.of(
+      pxRectangle(600, 100, 900, 200),
+      pxRectangle(250, 220, 350, 280)
+    )))));
   }
 
   @Test
