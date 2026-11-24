@@ -94,3 +94,38 @@ class's family, so `office=university` (class `office`) is not one.
 The native apps read the same tiles, so they get `importance`, the low-zoom POIs and the demotion
 with no engine change. A style that gates POIs by `importance` instead of `rank` needs the same
 thresholds on every platform: z12 `>= 50`, z13 `>= 42`.
+
+## Lake label room
+
+A lake's label point sits somewhere inside the lake, but nothing in the tiles says how much water
+surrounds it. A long name on a narrow or island-filled lake spills over the shore. The fork writes
+the room around the label so the client can show a name only when it fits inside the polygon.
+
+### Tile surface
+
+- `water_name` layer: new integer attributes `room_x` and `room_y` on the point label of an OSM
+  water polygon (`WaterName.ROOM_X`, `WaterName.ROOM_Y`). They are not part of the OpenMapTiles
+  schema. Lake centerlines, Natural Earth and marine points do not carry them.
+- `room_x` is the length of the horizontal chord through the label point, clipped to the water
+  polygon. Holes (islands) cut the chord, and only the segment containing the label point counts.
+  `room_y` is the same for the vertical chord.
+- Units are screen pixels at **z14 with 512px tiles**: `round(worldLength × 2^23)`, where world
+  coordinates span 0..1. At zoom `z` the room is `room × 2^(z − 14)` pixels.
+- Values are capped at 1,000,000.
+- If the geometry cannot be read or the label point is not enclosed, both attributes are omitted.
+  Clients treat a missing value as "fits".
+
+### Computation
+
+`WaterName.putLabelRoom` takes `SourceFeature.pointOnSurface()` (JTS `getInteriorPoint`, the
+same cached point `features.pointOnSurface` emits) and the world geometry, repaired with
+`GeometryFixer` when invalid. `WaterName.chord` walks every ring of every polygon, intersects each
+edge with the axis line through the point, and keeps the nearest crossing on each side. Edges use
+the half-open rule `(a0 > y) != (a1 > y)`, so a vertex on the line is counted once.
+
+### Porting notes
+
+The native apps read the same tiles. A style that hides lake names that overflow needs the same
+test on every platform: show the label when its rendered width is at most
+`room_x × 2^(zoom − 14)` and its height at most `room_y × 2^(zoom − 14)`, or when either attribute
+is missing.
