@@ -454,6 +454,44 @@ class PoiTest extends AbstractLayerTest {
     assertEquals(List.of(65, 65), result.stream().map(f -> f.tags().get(Poi.IMPORTANCE)).toList());
   }
 
+  private List<FeatureCollector.Feature> poisOf(Map<String, Object> tags) {
+    var result = new ArrayList<FeatureCollector.Feature>();
+    for (var feature : process(polygonFeature(tags))) {
+      if (feature.getLayer().equals(Poi.LAYER_NAME)) {
+        result.add(feature);
+      }
+    }
+    return result;
+  }
+
+  @Test
+  void testNamedBuildingIsLabelled() {
+    var pois = poisOf(Map.of("building", "school", "name", "Math Building"));
+    assertEquals(1, pois.size());
+    var attrs = pois.getFirst().getAttrsAtZoom(14);
+    assertEquals("building", attrs.get("class"));
+    assertEquals("school", attrs.get("subclass"));
+    assertEquals("Math Building", attrs.get("name"));
+    assertEquals(null, attrs.get(Poi.IMPORTANCE));
+    assertEquals(Poi.BUILDING_MINZOOM, pois.getFirst().getMinZoom());
+  }
+
+  @Test
+  void testUnnamedBuildingIsNotLabelled() {
+    assertEquals(List.of(), poisOf(Map.of("building", "school")));
+  }
+
+  @Test
+  void testBuildingThatIsAPoiIsLabelledOnce() {
+    var pois = poisOf(Map.of("building", "school", "amenity", "theatre", "name", "A Building"));
+    assertEquals(List.of("theatre"), pois.stream().map(f -> f.getAttrsAtZoom(14).get("class")).toList());
+  }
+
+  @Test
+  void testBuildingPartIsNotLabelled() {
+    assertEquals(List.of(), poisOf(Map.of("building:part", "yes", "name", "Tower")));
+  }
+
   @Test
   void testEmbassy() {
     assertFeatures(7, List.of(Map.of(

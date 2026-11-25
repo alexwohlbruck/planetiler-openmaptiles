@@ -95,6 +95,26 @@ The native apps read the same tiles, so they get `importance`, the low-zoom POIs
 with no engine change. A style that gates POIs by `importance` instead of `rank` needs the same
 thresholds on every platform: z12 `>= 50`, z13 `>= 42`.
 
+## Building names
+
+Upstream's `building` layer carries no names, and only buildings with a POI tag (`amenity`, `shop`,
+…) reach the `poi` layer. A campus whose halls are tagged only `building=* name=*` shows no labels.
+
+### Tile surface
+
+- `poi` layer: a named OSM building polygon that the POI table does not already match is written
+  as a point with `class=building` and `subclass` set to its `building` value (`school`, `yes`, …),
+  plus the usual `name*` attributes. `building:part` alone does not qualify.
+- `minzoom` 14 (`Poi.BUILDING_MINZOOM`); no `importance`, so it sorts and ranks after every named POI
+  and never pushes a place down its label-grid cell. Among buildings, the larger footprint ranks
+  first (`PoiImportance.footprint`).
+- A building that is also a POI (`building=school amenity=theatre`) is emitted once, as that POI.
+
+### Porting notes
+
+No engine change. A style needs a text-only layer for `class == building` that sits below the POI
+badges, so a place wins a collision with a building's name. Parchment shows it from z16.
+
 ## Lake label room
 
 A lake's label point sits somewhere inside the lake, but nothing in the tiles says how much water
