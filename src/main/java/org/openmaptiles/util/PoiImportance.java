@@ -88,7 +88,7 @@ public final class PoiImportance {
     return FAME_LINKED + perDecade(count, MIN_VIEWS, 6, FAME_VIEWS_MAX);
   }
 
-  static int footprint(double squareMeters) {
+  public static int footprint(double squareMeters) {
     return perDecade(squareMeters, MIN_SQUARE_METERS, 6, SIZE_MAX);
   }
 

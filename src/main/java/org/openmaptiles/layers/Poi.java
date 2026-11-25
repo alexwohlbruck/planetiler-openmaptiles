@@ -87,6 +87,7 @@ public class Poi implements
   OpenMapTilesSchema.Poi,
   Tables.OsmPoiPoint.Handler,
   Tables.OsmPoiPolygon.Handler,
+  Tables.OsmBuildingPolygon.Handler,
   ForwardingProfile.TilePostProcessor,
   ForwardingProfile.FinishHandler {
 
@@ -101,6 +102,9 @@ public class Poi implements
   /** Named POIs at least this important appear from z12, and from z13 above the next threshold. */
   static final int Z12_IMPORTANCE = 50;
   static final int Z13_IMPORTANCE = 42;
+  /** Class of a named building that is not otherwise a POI: see FORK.md. */
+  static final String CLASS_BUILDING = "building";
+  static final int BUILDING_MINZOOM = 14;
   private static final Map<String, Integer> CLASS_RANKS = Map.ofEntries(
     entry(FieldValues.CLASS_HOSPITAL, 20),
     entry(FieldValues.CLASS_RAILWAY, 40),
@@ -319,6 +323,27 @@ public class Poi implements
         e.log(stats, "omt_poi_container", "Unable to get POI container geometry for " + element.source().id());
       }
     }
+  }
+
+  @Override
+  public void process(Tables.OsmBuildingPolygon element, FeatureCollector features) {
+    var source = element.source();
+    if (nullOrEmpty(source.getString("name")) || nullOrEmpty(element.building()) ||
+      Tables.OsmPoiPolygon.MAPPING.evaluate(source)) {
+      return;
+    }
+    int footprint = PoiImportance.footprint(squareMeters(element));
+    features.centroidIfConvex(LAYER_NAME)
+      .setBufferPixels(BUFFER_SIZE)
+      .setAttr(Fields.CLASS, CLASS_BUILDING)
+      .setAttr(Fields.SUBCLASS, element.building())
+      .putAttrs(OmtLanguageUtils.getNames(source.tags(), translations))
+      .setPointLabelGridPixelSize(14, 64)
+      .setSortKey(SortKey
+        .orderByTruesFirst(false)
+        .thenByInt(PoiImportance.MAX - footprint, 0, PoiImportance.MAX)
+        .get())
+      .setMinZoom(BUILDING_MINZOOM);
   }
 
   private <T extends Tables.WithSubclass & Tables.WithStation & Tables.WithFunicular & Tables.WithSport & Tables.WithInformation & Tables.WithReligion & Tables.WithMappingKey & Tables.WithName & Tables.WithIndoor & Tables.WithLayer & Tables.WithSource & Tables.WithOperator & Tables.WithNetwork & Tables.WithBrand & Tables.WithRef> Integer setupPoiFeature(
